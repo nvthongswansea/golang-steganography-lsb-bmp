@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
-	"github.com/gin-gonic/gin"
+	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
 
 var mask = [...]byte{128, 64, 32, 16, 8, 4, 2, 1}
@@ -31,8 +33,10 @@ func main() {
 			http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 			panic(err)
 		}
-
-		img, err := encodeMessage(buf.Bytes()[:], c.PostForm("message"))
+		// encrypt the message string and get bytes of the encrypted message
+		encMessageBytes := encrypt(c.PostForm("message"), c.PostForm("password"))
+		// add the encrypted message's bytes to the image
+		img, err := encodeMessage(buf.Bytes()[:], encMessageBytes)
 		if err != nil {
 			http.Error(c.Writer, err.Error(), http.StatusBadRequest)
 			panic(err)
@@ -42,6 +46,7 @@ func main() {
 	})
 
 	r.POST("/decode", func(c *gin.Context) {
+		fmt.Println("pass", c.PostForm("password"))
 		file, _, err := c.Request.FormFile("image")
 		if err != nil {
 			http.Error(c.Writer, err.Error(), http.StatusNotFound)
@@ -54,26 +59,27 @@ func main() {
 			http.Error(c.Writer, err.Error(), http.StatusInternalServerError)
 			panic(err)
 		}
-
-		msg := decodeMessage(buf.Bytes()[:])
-
+		// get the bytes of ecnrypted message from image
+		encMessageBytes := decodeMessage(buf.Bytes()[:])
+		// decrypt the message from the encrypted message's bytes
+		decrMessage := decrypt(encMessageBytes, c.PostForm("password"))
+		// send the message string to client browser
 		c.Writer.WriteHeader(http.StatusOK)
-		c.Writer.WriteString(msg)
+		c.Writer.WriteString(decrMessage)
 	})
 
 	r.Run(":5000")
 }
 
-func encodeMessage(img []byte, message string) ([]byte, error) {
-	m := []byte(message)
-
-	if len(message)*8 > len(img)-54 {
+// encodeMessage encodes message based on lsb
+func encodeMessage(img, messageBytes []byte) ([]byte, error) {
+	if len(messageBytes)*8 > len(img)-54 {
 		return nil, errors.New("Error: image is not large enough to hold this message")
 	}
 
-	for i := 0; i < len(m); i++ {
+	for i := 0; i < len(messageBytes); i++ {
 		index := 55 + i*8
-		b := m[i]
+		b := messageBytes[i]
 
 		for j := 0; j < 8; j++ {
 			if b&mask[j] == 0 {
@@ -83,7 +89,7 @@ func encodeMessage(img []byte, message string) ([]byte, error) {
 			}
 		}
 
-		if i == len(m)-1 {
+		if i == len(messageBytes)-1 {
 			for j := 8; j < 16; j++ {
 				img[index+j] = setLSB(0, img[index+j])
 			}
@@ -93,8 +99,9 @@ func encodeMessage(img []byte, message string) ([]byte, error) {
 	return img, nil
 }
 
-func decodeMessage(img []byte) string {
-	message := ""
+// decodeMessage decode message based on lsb alg
+func decodeMessage(img []byte) []byte {
+	messageByte := make([]byte, 0)
 
 	for i := 55; i < len(img)-9; i += 8 {
 		var letter byte
@@ -115,9 +122,9 @@ func decodeMessage(img []byte) string {
 			break
 		}
 
-		message += string(letter)
+		messageByte = append(messageByte, letter)
 	}
-	return message
+	return messageByte
 }
 
 func setLSB(b byte, val byte) byte {
